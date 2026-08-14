@@ -178,6 +178,8 @@ def main() -> int:
     ap.add_argument("--since"), ap.add_argument("--until")
     ap.add_argument("--project", help="substring of the project key")
     ap.add_argument("--limit", type=int, default=20)
+    ap.add_argument("--recent", action="store_true",
+                    help="order by date instead of relevance")
     ap.add_argument("--refresh", action="store_true")
     ap.add_argument("--rebuild", action="store_true")
     ap.add_argument("--stats", action="store_true")
@@ -228,10 +230,15 @@ def main() -> int:
         where.append("day <= ?"); params.append(a.until)
     if a.project:
         where.append("project LIKE ?"); params.append(f"%{a.project}%")
-    params.append(a.limit)
+    # Default to relevance, not recency. Recency put today's conversations *about* an old
+    # thread above the old thread itself — which is the exact failure this tool replaced.
+    order = "day DESC" if a.recent else "bm25(msgs)"
+    # Over-fetch so dedupe below can still fill --limit.
+    params.append(a.limit * 8)
 
-    sql = (f"SELECT day, role, project, session, snippet(msgs, 0, '\033[1;33m', '\033[0m', '…', 18) "
-           f"FROM msgs WHERE {' AND '.join(where)} ORDER BY day DESC LIMIT ?")
+    sql = (f"SELECT day, role, project, session, "
+           f"snippet(msgs, 0, '\033[1;33m', '\033[0m', '…', 18) "
+           f"FROM msgs WHERE {' AND '.join(where)} ORDER BY {order} LIMIT ?")
     try:
         rows = db.execute(sql, params).fetchall()
     except sqlite3.OperationalError as e:
@@ -240,13 +247,27 @@ def main() -> int:
 
     total = db.execute(f"SELECT COUNT(*) FROM msgs WHERE {' AND '.join(where)}",
                        params[:-1]).fetchone()[0]
+
+    # A conversation copied into the archive is indexed under both roots, so the same message
+    # can surface twice. Dedupe on (session, snippet) at display time — the index stays a
+    # faithful mirror of what is on disk, which is what makes it safely rebuildable.
+    seen, shown = set(), 0
     for day, role, project, session, snip in rows:
+        flat = " ".join(snip.split())
+        key = (session, re.sub(r"\033\[[0-9;]*m", "", flat))
+        if key in seen:
+            continue
+        seen.add(key)
         print(f"\n\033[1m{pretty(project)}\033[0m  {day}  {role}")
         print(f"  {session}")
-        print(f"  {' '.join(snip.split())}")
-    shown = len(rows)
-    print(f"\n{shown} shown of {total} match(es)"
-          + (f" — raise --limit to see the rest" if total > shown else ""), file=sys.stderr)
+        print(f"  {flat}")
+        shown += 1
+        if shown >= a.limit:
+            break
+    print(f"\n{shown} shown (deduped) of {total} raw match(es)"
+          + ("  — raise --limit for more" if total > shown else "")
+          + ("" if a.recent else "  · ranked by relevance; --recent for newest-first"),
+          file=sys.stderr)
     if shown:
         print("\nInterrogate one:  claude --resume <session-id>"
               "   |   kit-consult.sh <session-id> \"question\"")
