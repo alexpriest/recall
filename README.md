@@ -1,6 +1,14 @@
 # recall
 
-Full-text search over every Claude Code conversation Alex has ever had.
+Full-text search over every Claude Code conversation you have ever had.
+
+## Status
+
+Shipped — indexes every Claude Code conversation back to December 2025.
+
+## License
+
+Not licensed for reuse.
 
 ```sh
 recall "vermouth trademark"              # FTS5 — words AND'd, "quote a phrase", OR / NOT
